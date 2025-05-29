@@ -1,0 +1,211 @@
+# -*- coding: utf-8 -*-
+
+import csv
+import os
+import time
+import schedule
+import threading
+from datetime import datetime
+
+CSV_FILE = 'med_schedule.csv'
+LOG_FILE = 'med_log.csv'
+
+fieldnames = ['Name', 'DosagePerIntake', 'Frequency', 'Time', 'PillsLeft']
+
+def load_schedule():
+    if not os.path.exists(CSV_FILE):
+        return []
+    with open(CSV_FILE, mode='r', newline='') as file:
+        reader = csv.DictReader(file)
+        return list(reader)
+
+def save_schedule(schedule_list):
+    with open(CSV_FILE, mode='w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(schedule_list)
+
+def log_med_action(name, dosage, action, timestamp=None):
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_exists = os.path.exists(LOG_FILE)
+    with open(LOG_FILE, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not log_exists:
+            writer.writerow(['Timestamp', 'Medicine', 'Dosage', 'Action'])
+        writer.writerow([timestamp, name, dosage, action])
+
+def trigger_reminder(med):
+    print(f"\n⏰ Reminder: Take {med['DosagePerIntake']} tablet(s) of {med['Name']} now.")
+    print(f"Scheduled Time: {med['Time']}, Frequency: {med['Frequency'].capitalize()}")
+    print(f"Pills Left: {med['PillsLeft']}")
+
+    # Get input on medication intake, only y/n allowed
+    while True:
+        resp = input("Did you take the medicine? (y/n): ").strip().lower()
+        if resp in ['y', 'n']:
+            break
+        print("Please enter 'y' or 'n'.")
+
+    schedule_list = load_schedule()
+    for entry in schedule_list:
+        if (entry['Name'] == med['Name'] and entry['Time'] == med['Time'] and entry['Frequency'] == med['Frequency']):
+            if resp == 'y':
+                new_pills_left = max(0, int(entry['PillsLeft']) - int(entry['DosagePerIntake']))
+                entry['PillsLeft'] = str(new_pills_left)
+                log_med_action(entry['Name'], entry['DosagePerIntake'], 'Taken')
+            else:
+                log_med_action(entry['Name'], entry['DosagePerIntake'], 'Missed')
+            break
+    save_schedule(schedule_list)
+    print("Returning to menu...")
+
+def schedule_job(med):
+    time_str = med['Time']
+    freq = med['Frequency']
+    if freq == 'daily':
+        schedule.every().day.at(time_str).do(trigger_reminder, med)
+    elif freq == 'weekly':
+        schedule.every().monday.at(time_str).do(trigger_reminder, med)
+
+def catchup_reminders(schedule_list):
+    now = datetime.now()
+    for med in schedule_list:
+        freq = med['Frequency']
+        med_time = datetime.strptime(med['Time'], "%H:%M").replace(year=now.year, month=now.month, day=now.day)
+        if freq == 'weekly':
+            if now.weekday() != 0:
+                continue
+        if med_time <= now:
+            print(f"\n[Catch-up] Triggering missed reminder for {med['Name']} scheduled at {med['Time']}")
+            trigger_reminder(med)
+
+def run_scheduler():
+    while True:
+        schedule.run_pending()
+        time.sleep(0.1)  # short sleep for responsiveness
+
+def add_medication():
+    print("\nAdd Medication")
+    name = input("Medicine name: ").strip()
+    while True:
+        try:
+            dosage = int(input("Dosage per intake (max 10): ").strip())
+            if 1 <= dosage <= 10:
+                break
+            else:
+                print("Dosage must be between 1 and 10.")
+        except ValueError:
+            print("Please enter a valid integer.")
+    while True:
+        freq = input("Frequency (daily/weekly): ").strip().lower()
+        if freq in ['daily', 'weekly']:
+            break
+        print("Frequency must be 'daily' or 'weekly'.")
+    while True:
+        time_str = input("Time (HH:MM, 24-hour): ").strip()
+        try:
+            datetime.strptime(time_str, "%H:%M")
+            break
+        except ValueError:
+            print("Invalid time format. Please use HH:MM.")
+    while True:
+        try:
+            pills_left = int(input("Number of pills left: ").strip())
+            if pills_left >= 0:
+                break
+            else:
+                print("Pills left cannot be negative.")
+        except ValueError:
+            print("Please enter a valid integer.")
+
+    schedule_list = load_schedule()
+    schedule_list.append({
+        'Name': name,
+        'DosagePerIntake': str(dosage),
+        'Frequency': freq,
+        'Time': time_str,
+        'PillsLeft': str(pills_left)
+    })
+    save_schedule(schedule_list)
+    print(f"Medication '{name}' added successfully.")
+
+def view_schedule():
+    schedule_list = load_schedule()
+    if not schedule_list:
+        print("\nNo medications scheduled.")
+        return
+    print("\nCurrent Medication Schedule:")
+    for i, med in enumerate(schedule_list, 1):
+        print(f"{i}. {med['Name']} - Dosage: {med['DosagePerIntake']}, Frequency: {med['Frequency']}, Time: {med['Time']}, Pills Left: {med['PillsLeft']}")
+
+def remove_medication():
+    schedule_list = load_schedule()
+    if not schedule_list:
+        print("\nNo medications to remove.")
+        return
+    print("\nRemove Medication")
+    for i, med in enumerate(schedule_list, 1):
+        print(f"{i}. {med['Name']} - Dosage: {med['DosagePerIntake']}, Frequency: {med['Frequency']}, Time: {med['Time']}")
+    while True:
+        try:
+            choice = int(input("Enter the number of medication to remove (0 to cancel): "))
+            if choice == 0:
+                print("Remove cancelled.")
+                return
+            if 1 <= choice <= len(schedule_list):
+                removed = schedule_list.pop(choice - 1)
+                save_schedule(schedule_list)
+                print(f"Medication '{removed['Name']}' removed successfully.")
+                return
+            else:
+                print(f"Please enter a number between 1 and {len(schedule_list)}, or 0 to cancel.")
+        except ValueError:
+            print("Please enter a valid integer.")
+
+def main_menu():
+    print("\n--- Medicure Medication Reminder ---")
+    print("1. Add Medication")
+    print("2. View Medication Schedule")
+    print("3. Remove Medication")
+    print("4. Exit")
+
+def main():
+    # Load schedule, set up reminders
+    schedule.clear()
+    schedule_list = load_schedule()
+    if schedule_list:
+        for med in schedule_list:
+            schedule_job(med)
+        # Catch up for missed meds at start
+        catchup_reminders(schedule_list)
+
+    # Start scheduler in background thread
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+
+    while True:
+        main_menu()
+        choice = input("Choose an option: ").strip()
+        if choice == '1':
+            add_medication()
+            # Reschedule after adding
+            schedule.clear()
+            for med in load_schedule():
+                schedule_job(med)
+        elif choice == '2':
+            view_schedule()
+        elif choice == '3':
+            remove_medication()
+            # Reschedule after removal
+            schedule.clear()
+            for med in load_schedule():
+                schedule_job(med)
+        elif choice == '4':
+            print("👋 Goodbye!")
+            break
+        else:
+            print("Invalid option, try again.")
+
+if __name__ == "__main__":
+    main()
